@@ -36,13 +36,13 @@ test_cifar100_transform = transforms.Compose(
 )
 
 
-def input_dataset(dataset, noise_type, noise_path, is_human):
+def input_dataset(dataset, noise_type, noise_path, is_human, my_eval=False):
     if dataset == "cifar10":
         train_dataset = CIFAR10(
             root="~/data/",
             download=True,
             train=True,
-            transform=train_cifar10_transform,
+            transform=test_cifar10_transform if my_eval else train_cifar10_transform,
             noise_type=noise_type,
             noise_path=noise_path,
             is_human=is_human,
@@ -61,7 +61,7 @@ def input_dataset(dataset, noise_type, noise_path, is_human):
             root="~/data/",
             download=True,
             train=True,
-            transform=train_cifar100_transform,
+            transform=test_cifar10_transform if my_eval else train_cifar100_transform,
             noise_type=noise_type,
             noise_path=noise_path,
             is_human=is_human,

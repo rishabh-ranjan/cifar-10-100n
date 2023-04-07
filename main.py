@@ -32,6 +32,132 @@ parser.add_argument(
     help="how many subprocesses to use for data loading",
 )
 parser.add_argument("--is_human", action="store_true", default=False)
+parser.add_argument("--my_store", type=str, required=True)
+
+args = parser.parse_args()
+
+if args.noise_path is None:
+    if args.dataset == "cifar10":
+        args.noise_path = "./data/CIFAR-10_human.pt"
+    elif args.dataset == "cifar100":
+        args.noise_path = "./data/CIFAR-100_human.pt"
+    else:
+        raise NameError(f"Undefined dataset {args.dataset}")
+
+noise_type_map = {
+    "clean": "clean_label",
+    "worst": "worse_label",
+    "aggre": "aggre_label",
+    "rand1": "random_label1",
+    "rand2": "random_label2",
+    "rand3": "random_label3",
+    "clean100": "clean_label",
+    "noisy100": "noisy_label",
+}
+args.noise_type = noise_type_map[args.noise_type]
+
+
+################################################################################
+
+import json
+from pathlib import Path
+import sys
+import time
+
+import torch
+from torch.utils.data import DataLoader
+import torch.multiprocessing as mp
+
+mp.set_sharing_strategy("file_system")
+
+if torch.cuda.is_available():
+    my_device = torch.device("cuda")
+    torch.backends.cudnn.benchmark = True
+else:
+    my_device = torch.device("cpu")
+
+my_ts = time.time_ns()
+my_root = f"store/{args.my_store}/{my_ts}"
+Path(my_root).mkdir(parents=True)
+print(f"tail -f {my_root}/stderr.txt {my_root}/stdout.txt")
+
+sys.stdout = open(f"{my_root}/stdout.txt", "w")
+sys.stderr = open(f"{my_root}/stderr.txt", "w")
+
+print(f"{my_root=}")
+
+with open(f"{my_root}/args.json", "w") as f:
+    json.dump(vars(args), f)
+
+my_eval_datasets = {}
+my_eval_datasets["train"], my_eval_datasets["test"], _, _ = input_dataset(
+    args.dataset, args.noise_type, args.noise_path, args.is_human, my_eval=True
+)
+
+my_eval_loaders = {
+    split: DataLoader(
+        my_eval_datasets[split],
+        batch_size=256,
+        shuffle=False,
+        num_workers=16,
+        persistent_workers=True,
+        pin_memory=True,
+    )
+    for split in ["train", "test"]
+}
+
+Path(f"{my_root}/epochs").mkdir()
+
+
+def my_eval(net, opt, epoch):
+    print()
+    print("-" * 80)
+
+    metrics = {
+        "epochs": epoch + 1,
+        "lr": opt.param_groups[0]["lr"],
+    }
+
+    Path(f"{my_root}/epochs/{epoch}").mkdir()
+    net.eval()
+    for split, eval_loader in my_eval_loaders.items():
+        with torch.no_grad():
+            yhats = []
+            ys = []
+            for x, y, _ in eval_loader:
+                x = x.to(my_device, non_blocking=True)
+                y = y.to(my_device, non_blocking=True)
+                ys.append(y)
+                yhat = net(x)
+                yhats.append(yhat)
+            yhat = torch.cat(yhats, dim=0)
+            y = torch.cat(ys, dim=0)
+
+            metrics.update(
+                {
+                    f"err/{split}": (yhat.argmax(-1) != y).float().mean().item(),
+                    f"nll/{split}": F.cross_entropy(yhat, y).item(),
+                }
+            )
+
+        torch.save(yhat, f"{my_root}/epochs/{epoch}/{split}_yhat.pt")
+        print(f"saved {my_root}/epochs/{epoch}/{split}_yhat.pt")
+        if epoch == 0:
+            torch.save(y, f"{my_root}/epochs/{epoch}/{split}_y.pt")
+            print(f"saved {my_root}/epochs/{epoch}/{split}_y.pt")
+
+    with open(f"{my_root}/epochs/{epoch}/metrics.json", "w") as f:
+        json.dump(metrics, f)
+    print(f"saved {my_root}/epochs/{epoch}/metrics.json")
+
+    print(json.dumps(metrics, indent=4))
+
+    print("-" * 80)
+    print()
+
+
+################################################################################
+
 
 # Adjust learning rate and for SGD Optimizer
 def adjust_learning_rate(optimizer, epoch, alpha_plan):
@@ -75,7 +201,7 @@ def train(epoch, train_loader, model, optimizer):
         # prec = 0.0
         train_total += 1
         train_correct += prec
-        loss = F.cross_entropy(logits, labels, reduce=True)
+        loss = F.cross_entropy(logits, labels)
 
         optimizer.zero_grad()
         loss.backward()
@@ -100,7 +226,6 @@ def train(epoch, train_loader, model, optimizer):
 # Evaluate the Model
 def evaluate(test_loader, model):
     model.eval()  # Change model to 'eval' mode.
-    print("previous_best", best_acc_)
     correct = 0
     total = 0
     for images, labels, _ in test_loader:
@@ -116,7 +241,8 @@ def evaluate(test_loader, model):
 
 
 #####################################main code ################################################
-args = parser.parse_args()
+
+
 # Seed
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed(args.seed)
@@ -124,33 +250,15 @@ torch.cuda.manual_seed(args.seed)
 # Hyper Parameters
 batch_size = 128
 learning_rate = args.lr
-noise_type_map = {
-    "clean": "clean_label",
-    "worst": "worse_label",
-    "aggre": "aggre_label",
-    "rand1": "random_label1",
-    "rand2": "random_label2",
-    "rand3": "random_label3",
-    "clean100": "clean_label",
-    "noisy100": "noisy_label",
-}
-args.noise_type = noise_type_map[args.noise_type]
+
 # load dataset
-if args.noise_path is None:
-    if args.dataset == "cifar10":
-        args.noise_path = "./data/CIFAR-10_human.pt"
-    elif args.dataset == "cifar100":
-        args.noise_path = "./data/CIFAR-100_human.pt"
-    else:
-        raise NameError(f"Undefined dataset {args.dataset}")
-
-
 train_dataset, test_dataset, num_classes, num_training_samples = input_dataset(
     args.dataset, args.noise_type, args.noise_path, args.is_human
 )
 noise_prior = train_dataset.noise_prior
 noise_or_not = train_dataset.noise_or_not
 print("train_labels:", len(train_dataset.train_labels), train_dataset.train_labels[:10])
+
 # load model
 print("building model...")
 model = ResNet34(num_classes)
@@ -163,13 +271,11 @@ train_loader = torch.utils.data.DataLoader(
     dataset=train_dataset, batch_size=128, num_workers=args.num_workers, shuffle=True
 )
 
-
 test_loader = torch.utils.data.DataLoader(
     dataset=test_dataset, batch_size=64, num_workers=args.num_workers, shuffle=False
 )
 alpha_plan = [0.1] * 60 + [0.01] * 40
 model.cuda()
-
 
 epoch = 0
 train_acc = 0
@@ -187,3 +293,5 @@ for epoch in range(args.n_epoch):
     # save results
     print("train acc on train images is ", train_acc)
     print("test acc on test images is ", test_acc)
+
+    my_eval(model, optimizer, epoch)
