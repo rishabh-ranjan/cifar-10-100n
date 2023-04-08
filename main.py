@@ -140,11 +140,12 @@ def my_eval(net, opt, epoch):
                 }
             )
 
-        torch.save(yhat, f"{my_root}/epochs/{epoch}/{split}_yhat.pt")
-        print(f"saved {my_root}/epochs/{epoch}/{split}_yhat.pt")
-        if epoch == 0:
-            torch.save(y, f"{my_root}/epochs/{epoch}/{split}_y.pt")
-            print(f"saved {my_root}/epochs/{epoch}/{split}_y.pt")
+        if split != "train":
+            torch.save(yhat, f"{my_root}/epochs/{epoch}/{split}_yhat.pt")
+            print(f"saved {my_root}/epochs/{epoch}/{split}_yhat.pt")
+            if epoch == 0:
+                torch.save(y, f"{my_root}/epochs/{epoch}/{split}_y.pt")
+                print(f"saved {my_root}/epochs/{epoch}/{split}_y.pt")
 
     with open(f"{my_root}/epochs/{epoch}/metrics.json", "w") as f:
         json.dump(metrics, f)
@@ -295,3 +296,15 @@ for epoch in range(args.n_epoch):
     print("test acc on test images is ", test_acc)
 
     my_eval(model, optimizer, epoch)
+
+################################################################################
+
+with open(f"{my_root}/args.json", "r") as f:
+    args_dict = json.load(f)
+
+args_dict["done"] = True
+
+with open(f"{my_root}/args.json", "w") as f:
+    json.dump(args_dict, f)
+
+################################################################################
